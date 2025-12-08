@@ -1,0 +1,5 @@
+{
+  "name": "CareerCompass AI",
+  "description": "AI-powered career strategist for students and freshers. Translates resumes and artifacts into actionable roadmaps and job-ready assets using Gemini 2.5 Flash.",
+  "requestFramePermissions": []
+}

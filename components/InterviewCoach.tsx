@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo } from 'react';
 import { generateInterviewQuestion, evaluateInterviewAnswer } from '../services/geminiService';
 import { MessageCircle, Send, PlayCircle, Award, RefreshCcw } from 'lucide-react';
@@ -5,9 +6,10 @@ import { InterviewEvaluation } from '../types';
 
 interface Props {
   role: string;
+  customTopics?: string[];
 }
 
-export const InterviewCoach: React.FC<Props> = ({ role }) => {
+export const InterviewCoach: React.FC<Props> = ({ role, customTopics }) => {
   const [topic, setTopic] = useState('');
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState('');
@@ -20,6 +22,10 @@ export const InterviewCoach: React.FC<Props> = ({ role }) => {
 
   // --- Dynamic Topic Logic ---
   const topics = useMemo(() => {
+    if (customTopics && customTopics.length > 0) {
+        return customTopics;
+    }
+
     const r = role.toLowerCase();
     
     // Tech / Engineering
@@ -53,7 +59,7 @@ export const InterviewCoach: React.FC<Props> = ({ role }) => {
 
     // Default / General
     return ['Core Competencies', 'Situational Judgment', 'Behavioral', 'Problem Solving', 'Leadership'];
-  }, [role]);
+  }, [role, customTopics]);
 
   const handleStart = async () => {
     if (!topic) return;

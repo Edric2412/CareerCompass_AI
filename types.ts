@@ -51,17 +51,22 @@ export interface PhaseEffort {
   interview_prep?: number;
 }
 
+export interface EffortCategory {
+  category: string; 
+  hours: number;
+}
+
 export interface RoadmapEffort {
-  phase_1: PhaseEffort;
-  phase_2: PhaseEffort;
-  phase_3: PhaseEffort;
+  phase_1: EffortCategory[];
+  phase_2: EffortCategory[];
+  phase_3: EffortCategory[];
 }
 
 export interface RoadmapTimelineItem {
     task_name: string;
     start_week: number; // 1-12
     end_week: number;   // 1-12
-    category: 'Technical' | 'Project' | 'Career';
+    category: string;
 }
 
 export interface EmployabilityProfile {
@@ -72,6 +77,8 @@ export interface EmployabilityProfile {
 }
 
 export interface TextSummaries {
+  candidate_name?: string; // Added for Portfolio
+  candidate_headline?: string; // Added for Portfolio
   profile_summary: string;
   strengths: string[];
   weaknesses: string[];
@@ -150,6 +157,7 @@ export interface AnalysisResult {
   assets: ApplicationAssets;
   portfolio_template: string; 
   resume_highlights?: ResumeHighlightsResult; // Optional as it might be null if analysis fails
+  interview_topics?: string[]; // New dynamic topics
 }
 
 // Add this to your types.ts file
@@ -157,6 +165,52 @@ export interface InterviewEvaluation {
   score: number;
   feedback: string;
   better_answer: string;
+}
+
+// Portfolio Types
+export interface CustomLink {
+    id: string;
+    label: string; // e.g., "Medium", "Dribbble", "Google Scholar"
+    url: string;
+}
+
+export interface PortfolioPreferences {
+    color_theme: "emerald" | "indigo" | "violet" | "amber" | "rose";
+    mode: "light" | "dark";
+    corners: "rounded" | "semi_rounded" | "sharp";
+    layout_style: "classic" | "split" | "centered";
+    font_vibe: "modern" | "formal" | "playful";
+    shadow_depth: "none" | "soft" | "strong";
+    density: "compact" | "comfortable" | "spacious";
+    animation_level: "none" | "subtle" | "full";
+    nav_style: "top_bar" | "pill_nav" | "sidebar";
+    avatar_style: "emoji" | "initials" | "minimal_circle" | "none";
+    section_order: string[];
+    // New Contact Fields
+    contact_email?: string;
+    contact_phone?: string;
+    custom_links: CustomLink[];
+}
+
+export interface CandidateProfileForPortfolio {
+    name: string;
+    headline: string;
+    short_summary: string;
+    key_skills: { category: string; skills: string[] }[];
+    projects: {
+        name: string;
+        summary: string;
+        tech_stack: string[];
+        highlight_bullets: string[];
+    }[];
+    links: {
+        email: string;
+        github: string;
+        linkedin: string;
+        portfolio: string | null;
+    };
+    // Pass everything else to AI for context inference
+    raw_analysis_context?: any;
 }
 
 // UI State Types

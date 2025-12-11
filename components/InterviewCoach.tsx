@@ -87,6 +87,21 @@ export const InterviewCoach: React.FC<Props> = ({ role, customTopics }) => {
     }
   }, [role, customTopics]);
 
+  // Handle Visualizer Loop Lifecycle
+  useEffect(() => {
+    if (currentState === 'recording') {
+        // Start drawing when we enter recording state and canvas is mounted
+        drawVisualizer();
+    }
+    
+    // Cleanup function to stop animation loop when leaving recording state
+    return () => {
+        if (animationFrameRef.current !== null) {
+            cancelAnimationFrame(animationFrameRef.current);
+        }
+    };
+  }, [currentState]);
+
   // --- Cleanup on Unmount ---
   useEffect(() => {
     return () => {
@@ -199,6 +214,25 @@ export const InterviewCoach: React.FC<Props> = ({ role, customTopics }) => {
 
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           
+          // Setup Audio Context & Visualizer FIRST so refs are ready when state changes
+          if (!audioContextRef.current) {
+              audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+          }
+          const ctx = audioContextRef.current;
+          
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 512; // Increased resolution
+          analyser.smoothingTimeConstant = 0.8; // Smoothness
+          const source = ctx.createMediaStreamSource(stream);
+          source.connect(analyser);
+          
+          // Store refs
+          analyserRef.current = analyser;
+          sourceRef.current = source;
+
+          // Resume if suspended
+          if (ctx.state === 'suspended') await ctx.resume();
+          
           // Setup MediaRecorder
           const mediaRecorder = new MediaRecorder(stream);
           mediaRecorderRef.current = mediaRecorder;
@@ -209,25 +243,9 @@ export const InterviewCoach: React.FC<Props> = ({ role, customTopics }) => {
           };
 
           mediaRecorder.start();
-          setCurrentState('recording');
-
-          // Setup Visualizer
-          if (!audioContextRef.current) {
-              audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-          }
-          const ctx = audioContextRef.current;
           
-          // Resume if suspended
-          if (ctx.state === 'suspended') await ctx.resume();
-
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 512; // Increased resolution
-          analyser.smoothingTimeConstant = 0.8; // Smoothness
-          const source = ctx.createMediaStreamSource(stream);
-          source.connect(analyser);
-          analyserRef.current = analyser;
-          sourceRef.current = source;
-          drawVisualizer();
+          // Trigger State Change -> This causes re-render -> canvas mounts -> useEffect triggers drawVisualizer
+          setCurrentState('recording');
 
           // Setup Interim Transcription (Browser API)
           if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -268,7 +286,8 @@ export const InterviewCoach: React.FC<Props> = ({ role, customTopics }) => {
               // Stop tracks
               mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
               if (recognitionRef.current) recognitionRef.current.stop();
-              if (animationFrameRef.current !== null) cancelAnimationFrame(animationFrameRef.current);
+              
+              // Note: Animation frame is cancelled by the useEffect cleanup when state changes below
               
               setCurrentState('processing');
               await processAnswer(audioBlob);

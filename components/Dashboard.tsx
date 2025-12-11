@@ -140,12 +140,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onReset, isDarkMode 
   const renderOverview = () => {
     const matchBreakdown = data.overall_scores?.match_breakdown || [];
     const hasMultipleMatches = matchBreakdown.length > 1;
+    // Fallback if market analysis is missing (backward compatibility)
+    const demand = data.market_analysis?.role_demand || 'Medium';
+    const percentile = data.market_analysis?.candidate_percentile || 50;
 
     return (
     <div className="space-y-6 animate-fadeIn">
       {/* Hero Score Card */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className={`col-span-1 ${cardClass} p-8 flex flex-col items-center justify-center text-center`}>
+        <div className={`col-span-1 ${cardClass} p-8 flex flex-col items-center justify-center text-center relative overflow-hidden`}>
             <h3 className="text-lg font-medium text-slate-600 dark:text-slate-400 mb-2 font-display uppercase tracking-wider text-xs">Overall Match</h3>
             
             {hasMultipleMatches ? (
@@ -175,7 +178,39 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onReset, isDarkMode 
                 </div>
             )}
             
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300 leading-relaxed font-body">{data.text_summaries?.profile_summary || "No summary available."}</p>
+            {/* Market Pulse Indicators - Improved Design */}
+            <div className="flex items-center justify-between w-full mt-6 px-2 border-t border-slate-200 dark:border-white/10 pt-4 gap-4">
+                <div className="text-center flex-1">
+                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-2">Role Demand</p>
+                    <span className={`px-3 py-1.5 rounded-full text-xs font-bold border ${
+                        demand === 'High' ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800' : 
+                        demand === 'Medium' ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800' : 
+                        'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-800'
+                    }`}>
+                        {demand}
+                    </span>
+                </div>
+                <div className="w-px h-10 bg-slate-200 dark:bg-white/10"></div>
+                <div className="text-center flex-1">
+                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-2" title="Where you stand against current applicants">Percentile</p>
+                    {/* New Gauge UI */}
+                    <div className="relative h-2 w-full bg-slate-200 dark:bg-white/10 rounded-full overflow-hidden">
+                         <div className="absolute left-0 top-0 bottom-0 bg-indigo-500 rounded-full" style={{width: `${percentile}%`}}></div>
+                         {/* Segment dividers */}
+                         <div className="absolute inset-0 flex justify-between px-[20%]">
+                              <div className="w-px h-full bg-white/50"></div>
+                              <div className="w-px h-full bg-white/50"></div>
+                              <div className="w-px h-full bg-white/50"></div>
+                              <div className="w-px h-full bg-white/50"></div>
+                         </div>
+                    </div>
+                    <p className="text-xs font-bold text-slate-800 dark:text-white mt-1">Top {100 - percentile}%</p>
+                </div>
+            </div>
+
+            <p className="mt-4 text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-body italic border-t border-slate-200 dark:border-white/10 pt-4 w-full text-left">
+                "{data.text_summaries?.profile_summary || "No summary available."}"
+            </p>
         </div>
 
         <div className={`col-span-1 md:col-span-2 ${cardClass} p-8`}>
@@ -197,7 +232,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onReset, isDarkMode 
         </div>
       </div>
 
-      {/* Strengths & Weaknesses (Restored) */}
+      {/* Strengths & Weaknesses */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className={`${cardClass} p-8`}>
               <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-6 font-display flex items-center">
@@ -302,7 +337,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onReset, isDarkMode 
                 </div>
             </div>
 
-            {/* Competency Matrix (Restored) */}
+            {/* Competency Matrix */}
             <div className={`${cardClass} p-8`}>
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-6 font-display flex items-center">
                     <div className="w-2 h-6 bg-violet-500 rounded-full mr-3"></div>
@@ -352,7 +387,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onReset, isDarkMode 
                 </div>
             </div>
 
-            {/* Project Analysis (Restored) */}
+            {/* Project Analysis */}
             <div className="space-y-4">
                  <h3 className="text-lg font-bold text-slate-900 dark:text-white font-display flex items-center">
                     <div className="w-2 h-6 bg-teal-500 rounded-full mr-3"></div>
@@ -493,28 +528,45 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, onReset, isDarkMode 
             { stage: 'Phase 3', score: data.employability_profile.phase_3_projected_score },
       ];
 
+      const startScore = data.employability_profile.current_visibility_score;
+      const endScore = data.employability_profile.phase_3_projected_score;
+
       return (
           <div className="space-y-6 animate-fadeIn">
-              {/* Projected Visibility Chart (Restored) */}
+              {/* Projected Visibility Chart */}
               <div className={`${cardClass} p-8`}>
-                  <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-6 font-display flex items-center">
-                    <div className="w-2 h-6 bg-indigo-500 rounded-full mr-3"></div>
-                    Projected Recruiter Visibility
-                  </h3>
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8">
+                      <div>
+                        <h3 className="text-lg font-bold text-slate-900 dark:text-white font-display flex items-center">
+                            <TrendingUp className="w-6 h-6 text-emerald-500 mr-3" />
+                            Projected Recruiter Visibility
+                        </h3>
+                        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 ml-9 font-body">Probability of passing screening & getting interviews</p>
+                      </div>
+                      
+                      <div className="mt-4 md:mt-0 px-5 py-3 bg-slate-900 dark:bg-emerald-950/30 border border-emerald-500/30 rounded-xl flex items-center gap-3 shadow-lg shadow-emerald-500/10 backdrop-blur-md transition-all hover:scale-105">
+                           <div className="flex items-center gap-3 font-display font-bold text-2xl text-emerald-400">
+                              <span>{startScore}%</span>
+                              <span className="text-slate-600 dark:text-slate-500 text-lg">→</span>
+                              <span>{endScore}%</span>
+                           </div>
+                      </div>
+                  </div>
+
                   <div className="h-64 w-full">
                     <ResponsiveContainer width="100%" height="100%">
                         <AreaChart data={visibilityData}>
                             <defs>
                                 <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
-                                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                                 </linearGradient>
                             </defs>
                             <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} vertical={false} />
                             <XAxis dataKey="stage" tick={{ fill: chartTextColor, fontSize: 12, fontWeight: 600, fontFamily: "'Google Sans Flex', sans-serif" }} />
                             <YAxis domain={[0, 100]} tick={{ fill: chartTextColor, fontSize: 12 }} />
                             <Tooltip contentStyle={{ borderRadius: '8px', backgroundColor: chartTooltipBg, border: isDarkMode ? '1px solid rgba(255,255,255,0.1)' : '1px solid #e2e8f0' }} itemStyle={{color: chartTextColor}} />
-                            <Area type="monotone" dataKey="score" stroke="#6366f1" strokeWidth={3} fillOpacity={1} fill="url(#colorScore)" />
+                            <Area type="monotone" dataKey="score" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorScore)" />
                         </AreaChart>
                     </ResponsiveContainer>
                   </div>

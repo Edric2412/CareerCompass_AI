@@ -42,6 +42,11 @@ export interface CompanyFit {
   research_lab: number;
 }
 
+export interface MarketAnalysis {
+  role_demand: 'High' | 'Medium' | 'Low';
+  candidate_percentile: number;
+}
+
 export interface PhaseEffort {
   programming?: number;
   data_analysis?: number;
@@ -139,6 +144,7 @@ export interface AnalysisResult {
     categories: RadarCategory[];
     match_breakdown: MatchBreakdown[]; 
   };
+  market_analysis: MarketAnalysis; // New field for real-time market data
   skill_distribution: SkillDistribution[];
   gap_skills: GapSkill[];
   competency_matrix: CompetencyArea[]; // Replaced fit_matrix
@@ -160,11 +166,46 @@ export interface AnalysisResult {
   interview_topics?: string[]; // New dynamic topics
 }
 
-// Add this to your types.ts file
-export interface InterviewEvaluation {
-  score: number;
-  feedback: string;
+// Interview Simulator Types
+export interface InterviewQuestion {
+  question_id: string;
+  question_text: string;
+  expected_keywords: string[];
+  hints: string[];
+}
+
+export interface InterviewEvaluationResult {
+  question_id: string;
+  question_text: string;
+  final_transcript: string;
+  overall_score: number;
+  subscores: {
+    structure: number;
+    technical_correctness: number;
+    depth: number;
+    clarity: number;
+    examples_and_evidence: number;
+    conciseness: number;
+  };
+  metrics: {
+    fluency_wpm: number;
+    fillers_count: number;
+    confidence_estimate: number;
+  };
+  timestamps?: {
+    start: number;
+    end: number;
+    text: string;
+    issue?: string;
+  }[];
+  what_went_well: string[];
+  what_to_improve: string[];
   better_answer: string;
+  advice_action_items: {
+    type: 'practice' | 'reading' | 'project' | 'microtask';
+    title: string;
+    detail: string;
+  }[];
 }
 
 // Portfolio Types

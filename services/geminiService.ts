@@ -1,6 +1,6 @@
 
-import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { AnalysisResult, GithubProject, ResumeHighlightsResult, PortfolioPreferences, CandidateProfileForPortfolio } from "../types";
+import { GoogleGenAI, Type, Schema, Modality } from "@google/genai";
+import { AnalysisResult, GithubProject, ResumeHighlightsResult, PortfolioPreferences, CandidateProfileForPortfolio, InterviewQuestion, InterviewEvaluationResult } from "../types";
 
 // ---------------------------------------------------------
 // Helper Functions
@@ -129,6 +129,14 @@ const ANALYSIS_SCHEMA: Schema = {
       },
       required: ["overall_match", "categories", "match_breakdown"]
     },
+    market_analysis: {
+      type: Type.OBJECT,
+      properties: {
+        role_demand: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+        candidate_percentile: { type: Type.NUMBER, description: "Candidate's standing (0-100) relative to other applicants in the current market." }
+      },
+      required: ["role_demand", "candidate_percentile"]
+    },
     skill_distribution: {
       type: Type.ARRAY,
       items: {
@@ -203,7 +211,6 @@ const ANALYSIS_SCHEMA: Schema = {
         research_lab: { type: Type.NUMBER },
       }
     },
-    // GENERIC ROADMAP EFFORT - No hardcoded 'programming' keys
     roadmap_effort: {
       type: Type.OBJECT,
       properties: {
@@ -251,7 +258,7 @@ const ANALYSIS_SCHEMA: Schema = {
                 task_name: { type: Type.STRING },
                 start_week: { type: Type.NUMBER },
                 end_week: { type: Type.NUMBER },
-                category: { type: Type.STRING } // Dynamic string, removed enum constraint
+                category: { type: Type.STRING } 
             },
             required: ["task_name", "start_week", "end_week", "category"]
         }
@@ -293,15 +300,85 @@ const ANALYSIS_SCHEMA: Schema = {
         },
         required: ["resume_bullets_optimized", "cover_letter", "linkedin_summary", "outreach_message"]
     },
-    portfolio_template: { type: Type.STRING, description: "A complete, single-file HTML string using Tailwind CSS for a personal portfolio website." },
+    portfolio_template: { type: Type.STRING },
     interview_topics: { 
         type: Type.ARRAY, 
-        items: { type: Type.STRING },
-        description: "5 tailored interview topics based on the candidate's gaps and target role."
+        items: { type: Type.STRING }
     }
   },
-  required: ["overall_scores", "skill_distribution", "gap_skills", "competency_matrix", "jd_breakdown", "roadmap_effort", "roadmap_details", "roadmap_timeline", "employability_profile", "text_summaries", "assets", "portfolio_template", "interview_topics"]
+  required: ["overall_scores", "market_analysis", "skill_distribution", "gap_skills", "competency_matrix", "jd_breakdown", "roadmap_effort", "roadmap_details", "roadmap_timeline", "employability_profile", "text_summaries", "assets", "portfolio_template", "interview_topics"]
 };
+
+const INTERVIEW_EVALUATION_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    question_id: { type: Type.STRING },
+    question_text: { type: Type.STRING },
+    final_transcript: { type: Type.STRING },
+    overall_score: { type: Type.NUMBER },
+    subscores: {
+      type: Type.OBJECT,
+      properties: {
+        structure: { type: Type.NUMBER },
+        technical_correctness: { type: Type.NUMBER },
+        depth: { type: Type.NUMBER },
+        clarity: { type: Type.NUMBER },
+        examples_and_evidence: { type: Type.NUMBER },
+        conciseness: { type: Type.NUMBER }
+      },
+      required: ["structure", "technical_correctness", "depth", "clarity", "examples_and_evidence", "conciseness"]
+    },
+    metrics: {
+      type: Type.OBJECT,
+      properties: {
+        fluency_wpm: { type: Type.NUMBER },
+        fillers_count: { type: Type.NUMBER },
+        confidence_estimate: { type: Type.NUMBER }
+      },
+      required: ["fluency_wpm", "fillers_count", "confidence_estimate"]
+    },
+    timestamps: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          start: { type: Type.NUMBER },
+          end: { type: Type.NUMBER },
+          text: { type: Type.STRING },
+          issue: { type: Type.STRING }
+        },
+        required: ["start", "end", "text"]
+      }
+    },
+    what_went_well: { type: Type.ARRAY, items: { type: Type.STRING } },
+    what_to_improve: { type: Type.ARRAY, items: { type: Type.STRING } },
+    better_answer: { type: Type.STRING },
+    advice_action_items: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          type: { type: Type.STRING, enum: ['practice', 'reading', 'project', 'microtask'] },
+          title: { type: Type.STRING },
+          detail: { type: Type.STRING }
+        },
+        required: ["type", "title", "detail"]
+      }
+    }
+  },
+  required: ["overall_score", "subscores", "metrics", "what_went_well", "what_to_improve", "better_answer", "advice_action_items"]
+};
+
+const INTERVIEW_QUESTION_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    question_id: { type: Type.STRING },
+    question_text: { type: Type.STRING },
+    expected_keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+    hints: { type: Type.ARRAY, items: { type: Type.STRING } }
+  },
+  required: ["question_id", "question_text", "expected_keywords", "hints"]
+}
 
 // ---------------------------------------------------------
 // GitHub REST API Integration
@@ -524,9 +601,11 @@ export const analyzeProfile = async (
     parts.push(await fileToGenerativePart(resume));
   }
 
-  // --- PERSONA-AGNOSTIC PROMPT ---
+  // --- STRICT PERSONA PROMPT ---
   const mainPrompt = `
-    You are CareerCompass AI, an **Expert Career Strategist** capable of analyzing ANY profession.
+    You are CareerCompass AI, acting as a **Strict, Top-Tier Hiring Manager (FAANG Standard)**.
+    Your goal is to provide a brutal, realistic assessment. Do not sugarcoat gaps.
+    If projects are generic (e.g., "To-Do List", "Weather App"), rate them low and call them out.
     
     Task: Analyze the provided RESUME and GITHUB PROJECTS (if any).
     
@@ -537,32 +616,35 @@ export const analyzeProfile = async (
     INSTRUCTIONS:
     0. **EXTRACTION**: Extract the candidate's Name and current professional Headline from the resume. Populate 'text_summaries.candidate_name' and 'text_summaries.candidate_headline'.
 
-    1. **ROLE DETECTION (CRITICAL)**: 
-       - If 'Target JD Text' is UNSPECIFIED or empty:
-         **Analyze the resume to determine the candidate's absolute strongest career path.**
-       - Use this **INFERRED ROLE** as the strict anchor for all analysis below.
-       - Populate 'jd_breakdown.role_title' with this inferred role.
+    1. **ROLE DETECTION & MARKET CHECK (CRITICAL)**: 
+       - If 'Target JD Text' is UNSPECIFIED, determine the candidate's absolute strongest career path.
+       - Use this **INFERRED ROLE** as the strict anchor for all analysis.
+       - **Use Google Search** to find the CURRENT market demand (2024-2025 data).
+       - **REALITY CHECK**: Explicitly check for layoffs, hiring freezes, or saturation in this field (e.g., Tech is saturating).
+       - DO NOT default to 'High'. Use 'Medium' for stable markets and 'Low' for saturated ones.
+       - Set 'market_analysis.role_demand' accordingly.
+       - Estimate the 'market_analysis.candidate_percentile' (0-100) strictly based on their current skills vs. top market talent. 
 
     2. **Dynamic Competency Scoring**: 
-       - Generate 6 competency categories relevant *only* to the Inferred Role.
+       - Generate 6 competency categories relevant *only* to the Inferred Role. Be harsh on 'Expert' ratings.
     
     3. **Skill Gap Analysis**:
        - Identify what is missing for the *Inferred Role*.
     
     4. **Roadmap**:
        - Create a 90-day plan. 
-       - **roadmap_effort**: Do NOT use fixed keys like 'programming'. Generate dynamic categories suitable for the role.
+       - **roadmap_effort**: Do NOT use fixed keys. Generate dynamic categories suitable for the role.
     
     5. **Assets**:
        - Write a Cover Letter and LinkedIn Summary tailored to the Inferred Role.
     
     6. **Portfolio Website**:
        - Generate a single-file HTML portfolio template.
-       - **Theme**: If the role is non-technical (e.g. Doctor, Chef), create a portfolio that showcases *case studies* or *publications*.
        
     7. **Interview Preparation**:
-       - Generate 5 highly tailored interview topics (strings) under 'interview_topics'.
-       - These should cover the candidate's biggest gaps and the core requirements of the role.
+       - Generate 5 BROAD, FOUNDATIONAL interview topic categories (strings).
+       - Examples: "System Design", "Behavioral", "Data Structures", "Core Java", "Machine Learning Concepts".
+       - DO NOT be too specific like "React Hooks useEffect" or "Java 8 Streams". Keep it high-level.
     
     8. **Strict Output**:
        - Follow the JSON schema exactly.
@@ -773,37 +855,133 @@ export const generatePortfolioHtml = async (
     }
 };
 
+// ---------------------------------------------------------
+// Interview Simulator Functions
+// ---------------------------------------------------------
 
-export const generateInterviewQuestion = async (role: string, topic: string) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `Generate one single tough but fair interview question for a ${role} position regarding ${topic}. Return just the question text.`;
-    
-    const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: prompt
-    });
-    return response.text;
+// Helper for interview topics schema
+const INTERVIEW_TOPICS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    topics: { type: Type.ARRAY, items: { type: Type.STRING } }
+  },
+  required: ["topics"]
+};
+
+export const generateInterviewTopics = async (role: string): Promise<string[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const prompt = `
+    Generate 5 BROAD, HIGH-LEVEL interview topic categories for a ${role} position.
+    Examples: "System Design", "Behavioral", "Data Structures", "Market Trends", "Core Concepts".
+    Avoid specific niche libraries.
+    Return STRICT JSON matching schema: { topics: string[] }
+  `;
+
+  try {
+      const response = await ai.models.generateContent({
+          model: 'gemini-3-pro-preview',
+          contents: prompt,
+          config: {
+              responseMimeType: "application/json",
+              responseSchema: INTERVIEW_TOPICS_SCHEMA
+          }
+      });
+      const clean = cleanJson(response.text || "{}");
+      const data = JSON.parse(clean);
+      return data.topics || [];
+  } catch (e) {
+      console.error("Failed to generate fresh topics", e);
+      return [];
+  }
 }
 
-export const evaluateInterviewAnswer = async (question: string, answer: string) => {
+export const generateInterviewQuestion = async (role: string, topic: string): Promise<InterviewQuestion> => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const prompt = `
-        Question: ${question}
-        Candidate Answer: ${answer}
-        
-        Provide a JSON evaluation:
-        {
-            "score": number (0-10),
-            "feedback": "string",
-            "better_answer": "string"
-        }
+      Generate one single tough but fair interview question for a ${role} position regarding ${topic}. 
+      Include 3-5 expected keywords and 1-2 hints for the interviewer.
+      Return STRICT JSON matching the INTERVIEW_QUESTION_SCHEMA.
     `;
     
     const response = await ai.models.generateContent({
         model: 'gemini-3-pro-preview',
         contents: prompt,
-        config: { responseMimeType: "application/json" }
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: INTERVIEW_QUESTION_SCHEMA
+        }
     });
-    const cleanedText = cleanJson(response.text);
+    
+    const clean = cleanJson(response.text || "{}");
+    return JSON.parse(clean);
+}
+
+export const generateSpeech = async (text: string): Promise<string | null> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-preview-tts',
+            contents: { parts: [{ text }] },
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+                }
+            }
+        });
+
+        // Extract audio base64
+        const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        return audioData || null;
+    } catch (e) {
+        console.error("TTS Generation failed", e);
+        return null;
+    }
+}
+
+export const transcribeAudio = async (audioBase64: string, mimeType: string = 'audio/webm'): Promise<string> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: mimeType, data: audioBase64 } },
+                    { text: "Transcribe this interview answer accurately. Return only the transcript text." }
+                ]
+            }
+        });
+        return response.text || "";
+    } catch (e) {
+        console.error("Transcription failed", e);
+        return "";
+    }
+}
+
+export const evaluateInterviewAnswer = async (question: InterviewQuestion, transcript: string): Promise<InterviewEvaluationResult> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    
+    const prompt = `
+        You are an expert Interview Coach. Evaluate this candidate's answer.
+        
+        Question: "${question.question_text}"
+        Context/Keywords: ${question.expected_keywords.join(', ')}
+        
+        Candidate Transcript: "${transcript}"
+        
+        Task: Score the answer strictly on a 0-100 scale. Provide detailed feedback.
+        Return STRICT JSON matching the INTERVIEW_EVALUATION_SCHEMA.
+    `;
+    
+    const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: prompt,
+        config: { 
+            responseMimeType: "application/json",
+            responseSchema: INTERVIEW_EVALUATION_SCHEMA
+        }
+    });
+    
+    const cleanedText = cleanJson(response.text || "{}");
     return JSON.parse(cleanedText);
 }

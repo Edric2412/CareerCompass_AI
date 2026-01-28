@@ -2,9 +2,44 @@
 import { GoogleGenAI, Type, Schema, Modality } from "@google/genai";
 import { AnalysisResult, GithubProject, ResumeHighlightsResult, PortfolioPreferences, CandidateProfileForPortfolio, InterviewQuestion, InterviewEvaluationResult } from "../types";
 
+const API_KEY = 'AIzaSyBjrspf5XSMi8s1fZMazsFHDeALxvRimig';
+
 // ---------------------------------------------------------
 // Helper Functions
 // ---------------------------------------------------------
+
+// Helper to wait for a specified duration
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Wrapper for API calls to handle 429 Rate Limits with Exponential Backoff
+const generateContentWithRetry = async (ai: GoogleGenAI, params: any, retries = 3, initialDelay = 2000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const result = await ai.models.generateContent(params);
+      return result;
+    } catch (error: any) {
+      // Check for Rate Limit (429) or Quota related errors
+      // The error object from the SDK might wrap the actual response
+      const message = error.message || JSON.stringify(error);
+      const isQuotaError = error.status === 429 || 
+                           error.code === 429 || 
+                           message.includes('429') || 
+                           message.includes('quota') || 
+                           message.includes('RESOURCE_EXHAUSTED');
+      
+      if (isQuotaError && i < retries - 1) {
+        const waitTime = initialDelay * Math.pow(2, i); // 2s, 4s, 8s...
+        console.warn(`Gemini API Quota Hit (429). Retrying in ${waitTime}ms...`);
+        await wait(waitTime);
+        continue;
+      }
+      
+      // If it's not a quota error, or we ran out of retries, throw it
+      throw error;
+    }
+  }
+  throw new Error("Max retries exceeded for Gemini API");
+};
 
 // Convert File to base64 for Gemini API
 export const fileToGenerativePart = async (file: File): Promise<{ inlineData: { data: string; mimeType: string } }> => {
@@ -497,7 +532,7 @@ export const analyzeGithubReposWithAPI = async (githubLinks: string): Promise<Gi
 
     if (validRepoData.length === 0) return [];
 
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const results: GithubProject[] = [];
 
     for (const repoData of validRepoData) {
@@ -510,14 +545,17 @@ export const analyzeGithubReposWithAPI = async (githubLinks: string): Promise<Gi
         `;
 
         try {
-            const response = await ai.models.generateContent({
-                model: 'gemini-3-pro-preview',
+            // Using Retry Wrapper
+            // Switched to gemini-2.5-flash for speed and higher quota limits
+            const response = await generateContentWithRetry(ai, {
+                model: 'gemini-2.5-flash',
                 contents: { parts: [{ text: prompt }] },
                 config: {
                     responseMimeType: "application/json",
                     responseSchema: GITHUB_DEEP_ANALYSIS_SCHEMA,
                 },
             });
+            
             const text = response.text;
             if (text) {
                 const cleanedText = cleanJson(text);
@@ -531,6 +569,10 @@ export const analyzeGithubReposWithAPI = async (githubLinks: string): Promise<Gi
                     improvement_suggestions: raw.improvement_suggestions
                 });
             }
+            
+            // Add a delay between repo analyses to respect RPM limits
+            await wait(2000);
+
         } catch (e) {
             console.error(`Github analysis failed`, e);
         }
@@ -544,7 +586,7 @@ export const analyzeGithubReposWithAPI = async (githubLinks: string): Promise<Gi
 export const analyzeResumeHighlights = async (resumeFile: File): Promise<ResumeHighlightsResult | null> => {
   if (!resumeFile) return null;
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: API_KEY });
   const resumePart = await fileToGenerativePart(resumeFile);
 
   const prompt = `
@@ -553,8 +595,9 @@ export const analyzeResumeHighlights = async (resumeFile: File): Promise<ResumeH
   `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+    // Switched to gemini-2.5-flash for speed and quota
+    const response = await generateContentWithRetry(ai, {
+      model: 'gemini-2.5-flash',
       contents: { parts: [resumePart, { text: prompt }] },
       config: {
         responseMimeType: "application/json",
@@ -567,6 +610,7 @@ export const analyzeResumeHighlights = async (resumeFile: File): Promise<ResumeH
     const cleanedText = cleanJson(text);
     return JSON.parse(cleanedText) as ResumeHighlightsResult;
   } catch (e) {
+    console.warn("Resume Highlights Failed", e);
     return null;
   }
 };
@@ -580,16 +624,26 @@ export const analyzeProfile = async (
   jdText: string,
   githubLinks: string
 ): Promise<AnalysisResult> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: API_KEY });
   
-  const githubAnalysisPromise = analyzeGithubReposWithAPI(githubLinks);
-  const resumeHighlightsPromise = analyzeResumeHighlights(resume);
-
+  // SEQUENTIAL EXECUTION to prevent 429 Quota errors
+  
+  // 1. Analyze GitHub Repos (if any)
   let githubProjects: GithubProject[] = [];
   try {
-      githubProjects = await githubAnalysisPromise;
+      githubProjects = await analyzeGithubReposWithAPI(githubLinks);
   } catch (e) {
       console.warn("GitHub analysis error (non-fatal):", e);
+  }
+  
+  // 2. Analyze Resume Highlights
+  let resumeHighlights: ResumeHighlightsResult | null = null;
+  try {
+      // Delay before starting next major task
+      if (githubProjects.length > 0) await wait(1500);
+      resumeHighlights = await analyzeResumeHighlights(resume);
+  } catch (e) {
+      console.warn("Resume highlights error (non-fatal):", e);
   }
   
   const githubSummaryText = githubProjects.length > 0 
@@ -652,7 +706,11 @@ export const analyzeProfile = async (
   
   parts.push({ text: mainPrompt });
 
-  const mainAnalysisPromise = ai.models.generateContent({
+  // 3. Main Analysis (with retry)
+  // Ensure we wait a bit before the big request
+  await wait(2000);
+
+  const mainResponse = await generateContentWithRetry(ai, {
     model: 'gemini-3-pro-preview',
     contents: { parts: parts },
     config: {
@@ -660,12 +718,7 @@ export const analyzeProfile = async (
       responseSchema: ANALYSIS_SCHEMA,
       tools: [{ googleSearch: {} }] 
     },
-  });
-
-  const [mainResponse, resumeHighlights] = await Promise.all([
-      mainAnalysisPromise, 
-      resumeHighlightsPromise
-  ]);
+  }, 4, 3000); // More retries for the main call
 
   const text = mainResponse.text;
   if (!text) throw new Error("No response from AI");
@@ -687,7 +740,7 @@ export const generatePortfolioHtml = async (
     analysisResult: AnalysisResult,
     preferences: PortfolioPreferences
 ): Promise<string> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
 
     // Map AnalysisResult to CandidateProfileForPortfolio
     const candidateProfile: CandidateProfileForPortfolio = {
@@ -844,7 +897,7 @@ export const generatePortfolioHtml = async (
     `;
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await generateContentWithRetry(ai, {
             model: 'gemini-3-pro-preview',
             contents: { parts: [{ text: promptText }] },
         });
@@ -869,7 +922,7 @@ const INTERVIEW_TOPICS_SCHEMA = {
 };
 
 export const generateInterviewTopics = async (role: string): Promise<string[]> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: API_KEY });
   const prompt = `
     Generate 5 BROAD, HIGH-LEVEL interview topic categories for a ${role} position.
     Examples: "System Design", "Behavioral", "Data Structures", "Market Trends", "Core Concepts".
@@ -878,7 +931,7 @@ export const generateInterviewTopics = async (role: string): Promise<string[]> =
   `;
 
   try {
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithRetry(ai, {
           model: 'gemini-3-pro-preview',
           contents: prompt,
           config: {
@@ -896,14 +949,14 @@ export const generateInterviewTopics = async (role: string): Promise<string[]> =
 }
 
 export const generateInterviewQuestion = async (role: string, topic: string): Promise<InterviewQuestion> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const prompt = `
       Generate one single tough but fair interview question for a ${role} position regarding ${topic}. 
       Include 3-5 expected keywords and 1-2 hints for the interviewer.
       Return STRICT JSON matching the INTERVIEW_QUESTION_SCHEMA.
     `;
     
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
         model: 'gemini-3-pro-preview',
         contents: prompt,
         config: {
@@ -917,9 +970,9 @@ export const generateInterviewQuestion = async (role: string, topic: string): Pr
 }
 
 export const generateSpeech = async (text: string): Promise<string | null> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     try {
-        const response = await ai.models.generateContent({
+        const response = await generateContentWithRetry(ai, {
             model: 'gemini-2.5-flash-preview-tts',
             contents: { parts: [{ text }] },
             config: {
@@ -940,9 +993,9 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
 }
 
 export const transcribeAudio = async (audioBase64: string, mimeType: string = 'audio/webm'): Promise<string> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     try {
-        const response = await ai.models.generateContent({
+        const response = await generateContentWithRetry(ai, {
             model: 'gemini-2.5-flash',
             contents: {
                 parts: [
@@ -959,7 +1012,7 @@ export const transcribeAudio = async (audioBase64: string, mimeType: string = 'a
 }
 
 export const evaluateInterviewAnswer = async (question: InterviewQuestion, transcript: string): Promise<InterviewEvaluationResult> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     
     const prompt = `
         You are an expert Interview Coach. Evaluate this candidate's answer.
@@ -973,7 +1026,7 @@ export const evaluateInterviewAnswer = async (question: InterviewQuestion, trans
         Return STRICT JSON matching the INTERVIEW_EVALUATION_SCHEMA.
     `;
     
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
         model: 'gemini-3-pro-preview',
         contents: prompt,
         config: { 

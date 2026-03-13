@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv() # Load environment variables from .env file
 
-from .services.gemini_service import (
+from services.gemini_service import (
     analyze_profile_full,
     generate_interview_question, 
     evaluate_interview_answer,
@@ -15,7 +15,7 @@ from .services.gemini_service import (
     generate_speech,
     generate_portfolio
 )
-from .schemas import (
+from schemas import (
     AnalysisResult, 
     InterviewQuestionRequest, InterviewQuestionResponse,
     InterviewEvaluationRequest, InterviewEvaluationResponse,

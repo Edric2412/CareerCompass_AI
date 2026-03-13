@@ -2,7 +2,7 @@ import { AnalysisResult, PortfolioPreferences, CandidateProfileForPortfolio } fr
 
 // Removed hardcoded API_KEY and GoogleGenAI import
 // Backend URL - in production this should be an env variable
-const BACKEND_URL = 'http://localhost:8000';
+const BACKEND_URL = 'http://localhost:8001';
 
 export const analyzeProfile = async (
   resume: File,

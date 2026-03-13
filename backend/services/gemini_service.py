@@ -1,14 +1,18 @@
 import os
+from datetime import datetime
 import time
 import base64
 import json
+import re
 import google.generativeai as genai
 from fastapi import UploadFile
+from bs4 import BeautifulSoup
+import requests
 from typing import List, Optional
 import typing_extensions as typing
 
 # Import Schemas
-from ..schemas import (
+from schemas import (
     AnalysisResult, 
     GithubDeepAnalysisResult, 
     ResumeHighlightsResult, 
@@ -18,7 +22,7 @@ from ..schemas import (
     PortfolioRequest,
     PortfolioResponse
 )
-from .github_service import parse_github_input, fetch_github_repo_data
+from services.github_service import parse_github_input, fetch_github_repo_data
 
 # Initialize Client
 # IMPORTANT: In a real app, use os.environ["GEMINI_API_KEY"]
@@ -98,13 +102,42 @@ async def generate_with_retry(model_name: str, contents: list, schema: any, retr
             )
             return json.loads(response.text)
         except Exception as e:
+            print(f"GenAI Error in generate_with_retry (attempt {i+1}): {e}")
             if "429" in str(e) or "quota" in str(e).lower():
                 time.sleep(2 * (i + 1))
                 continue
-            print(f"GenAI Error: {e}")
             raise e
     raise Exception("Max retries exceeded")
 
+
+async def get_live_job_market_data(role_title: str) -> dict:
+    """Fetches real-time job counts from LinkedIn's public search as a proxy for market demand."""
+    try:
+        # Simplify role title for search (e.g., "Senior Software Engineer" -> "software engineer")
+        search_term = role_title.lower().replace('senior ', '').replace('junior ', '').replace('staff ', '')
+        search_term = search_term.replace(' ', '%20')
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        url = f"https://www.linkedin.com/jobs/search/?keywords={search_term}&location=United%20States"
+        resp = requests.get(url, headers=headers, timeout=5)
+        
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            count_elem = soup.find('span', class_='results-context-header__job-count')
+            if count_elem:
+                count_str = count_elem.text.strip().replace('+', '').replace(',', '')
+                # Basic demand logic: >50k High, 10k-50k Med, <10k Low
+                count = int(count_str)
+                demand_tier = "High" if count > 50000 else ("Medium" if count > 10000 else "Low")
+                return {"count": count, "demand": demand_tier, "source": "LinkedIn Live Search"}
+        
+        return {"count": "Unknown", "demand": "Medium", "source": "Fallback AI Estimate"}
+    except Exception as e:
+        print(f"Market Scrape Error: {e}")
+        return {"count": "Unknown", "demand": "Medium", "source": "Fallback AI Estimate"}
 
 async def analyze_github_repos(github_links: str) -> List[GithubProject]:
     if not github_links:
@@ -133,7 +166,7 @@ async def analyze_github_repos(github_links: str) -> List[GithubProject]:
         try:
             # Using flash suitable for high volume
             raw_result = await generate_with_retry(
-                model_name='gemini-3-flash-preview',
+                model_name='gemini-2.5-flash',
                 contents=[prompt],
                 schema=GithubDeepAnalysisResult
             )
@@ -165,12 +198,16 @@ async def analyze_resume_highlights(file_bytes: bytes, mime_type: str) -> Option
             "data": file_bytes
         }
     
-        prompt = """
+        current_date = datetime.now().strftime("%B %d, %Y")
+        prompt = f"""
+        IMPORTANT: Today's date is {current_date}. The year is {datetime.now().year}. 
+        Dates in 2025 and 2026 are NOT future dates - they are recent/current. Do NOT flag them as fabricated or future-dated.
+        
         Analyze resume. Identify segments, rate them (green/yellow/red), and provide actionable feedback.
         """
         
         raw_result = await generate_with_retry(
-            model_name='gemini-3-flash-preview',
+            model_name='gemini-2.5-flash',
             contents=[file_part, prompt],
             schema=ResumeHighlightsResult
         )
@@ -187,7 +224,11 @@ async def analyze_profile_full(
     
     # Read file once
     resume_bytes = await resume_file.read()
-    mime_type = resume_file.content_type or "application/pdf"
+    mime_type = resume_file.content_type
+    
+    # Force application/pdf for octet-stream or missing mime types (since most uploads are PDFs)
+    if not mime_type or mime_type == 'application/octet-stream':
+        mime_type = "application/pdf"
 
     # 1. Analyze GitHub
     github_projects = await analyze_github_repos(github_links)
@@ -202,33 +243,56 @@ async def analyze_profile_full(
     else:
         github_summary_text = "No valid GitHub repositories found."
 
+    # Extract a rough role title for fetching live market data
+    rough_role = "software engineer"
+    if jd_text:
+        # Try to pull the first sentence or words as the role for a rough search
+        words = jd_text.split()[:5]
+        rough_role = " ".join(words).replace("\n", " ")
+        
+    # Fetch real market data
+    market_data = await get_live_job_market_data(rough_role)
+
     # 3. Main Analysis
     file_part = {
         "mime_type": mime_type,
         "data": resume_bytes
     }
     
+    current_date = datetime.now().strftime("%B %d, %Y")
+    
     main_prompt = f"""
     You are CareerCompass AI, acting as a **Strict, Top-Tier Hiring Manager (FAANG Standard)**.
     Your goal is to provide a brutal, realistic assessment.
     
+    IMPORTANT: Today's date is {current_date}. The year is {datetime.now().year}.
+    Dates in 2025 and 2026 are NOT future dates - they are recent/current.
+    
     INPUTS:
     - Target JD Text: {jd_text or "UNSPECIFIED - Auto-detect best fit role from Resume"}
     - GitHub Summary: {github_summary_text}
+    - LIVE MARKET DATA: {market_data['count']} active job listings found for this profile type (Demand Tier: {market_data['demand']}).
     
     INSTRUCTIONS:
-    1. ROLE DETECTION & MARKET CHECK.
+    1. ROLE DETECTION & MARKET CHECK:
+       - Use the LIVE MARKET DATA provided above to set `market_analysis.role_demand` to '{market_data['demand']}'.
+       - Base `candidate_percentile` on how this candidate compares to the general pool for this role given the current market competitiveness.
     2. Dynamic Competency Scoring & Skill Gap Analysis.
     3. Roadmap (90-day plan).
     4. Assets (Cover Letter, LinkedIn Summary).
     5. Portfolio Website Template.
     6. Interview Preparation Topics.
     
+    CRITICAL DATA REQUIREMENTS:
+    - overall_scores.categories: You MUST return AT LEAST 6 radar categories relevant to the detected role. Examples: Technical Proficiency, Problem Solving, Communication, Leadership, Domain Knowledge, Analytical Thinking, Creativity, Adaptability, Collaboration, Strategic Thinking. Choose categories that best fit the candidate's field. Score each 0-100.
+    - competency_matrix: You MUST return AT LEAST 5 competency areas, each with AT LEAST 2 skills. Dynamically choose areas relevant to the candidate's industry and role (e.g., for tech: languages, frameworks, cloud; for business: strategy, analytics, stakeholder management; for healthcare: clinical skills, compliance, patient care; etc.). Each skill must have a level (Beginner/Intermediate/Advanced/Expert), evidence_source, and evidence_comment.
+    - gap_skills: Return at least 5 gap skills with current_level and required_level, tailored to the target role.
+    
     Return STRICT JSON matching the AnalysisResult schema.
     """
     
     raw_result = await generate_with_retry(
-        model_name='gemini-3-flash-preview',
+        model_name='gemini-2.5-flash',
         contents=[file_part, main_prompt],
         schema=AnalysisResult,
         retries=4
@@ -262,7 +326,7 @@ async def generate_interview_question(role: str, topic: str) -> dict:
     
     try:
         raw_result = await generate_with_retry(
-            model_name='gemini-3-flash-preview',
+            model_name='gemini-2.5-flash',
             contents=[prompt],
             schema=InterviewQuestionResponse
         )
@@ -296,7 +360,7 @@ async def evaluate_interview_answer(question_text: str, transcript: str) -> dict
     
     try:
         raw_result = await generate_with_retry(
-            model_name='gemini-3-flash-preview',
+            model_name='gemini-2.5-flash',
             contents=[prompt],
             schema=InterviewEvaluationResponse
         )

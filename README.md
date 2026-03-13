@@ -196,4 +196,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-*Built with ❤️ for the next generation of engineers and creators.*
+*Built with ❤️ for the next generation of engineers and creators.*\
